@@ -6,6 +6,10 @@ param (
     [string]$ArchivePath
 )
 
+function NormalizeString { 
+    param([string]$Text) return $Text.Normalize([Text.NormalizationForm]::FormC) 
+}
+
 # 1. Setup paths and Timestamped CSV
 if (-not (Test-Path -Path $DirectoryPath)) {
     Write-Error "The directory path '$DirectoryPath' does not exist."
@@ -30,12 +34,18 @@ $results = New-Object System.Collections.Generic.List[PSObject]
 $countExactMatch = 0
 $countModified = 0
 
+
+
 Write-Host "Gathering file list..." -ForegroundColor Cyan
 $allFiles = Get-ChildItem -Path $sourceBase -File -Recurse
 $totalFiles = $allFiles.Count
 $processed = 0
 
-Write-Host "Analyzing and Moving files..." -ForegroundColor Cyan
+# Ask user if they want to rename instead of move 
+$renameChoice = Read-Host "Do you want to rename files matching the clash pattern instead of moving them? (Y/N)" 
+$renameMode = $renameChoice.Trim().ToUpper() -eq "Y"
+
+Write-Host "Analyzing files..." -ForegroundColor Cyan
 
 foreach ($clashFile in $allFiles) {
     $processed++
@@ -47,9 +57,42 @@ foreach ($clashFile in $allFiles) {
     if ($clashFile.Name -match $pattern) {
         $baseName = $Matches['BaseName'].Trim()
         $extension = $Matches['Extension']
+        $cleanName = NormalizeString ($baseName + $extension)
+
+        # --- RENAME MODE ---
+        if ($renameMode) {
+            $oldPath = NormalizeString $clashFile.FullName
+            $newPath = NormalizeString (Join-Path -Path $clashFile.DirectoryName -ChildPath $cleanName)
+
+            # Normalize path
+            $cleanName = NormalizeString $cleanName 
+            $oldPath = NormalizeString $clashFile.FullName 
+            $newPath = Join-Path -Path $clashFile.DirectoryName -ChildPath $cleanName 
+            $newPath = NormalizeString $newPath
+
+            # Avoid overwriting existing files
+            if (Test-Path $newPath) {
+                $cleanName = NormalizeString "$baseName (renamed)$extension"
+                $newPath = Join-Path -Path $clashFile.DirectoryName -ChildPath $cleanName
+            }
+
+            Rename-Item -LiteralPath $oldPath -NewName $cleanName -Force
+            $countRenamed++
+
+            $results.Add([PSCustomObject]@{
+                "Status"          = "RENAMED"
+                "Old Name"        = $clashFile.Name
+                "New Name"        = $cleanName
+                "Original Folder" = $clashFile.DirectoryName
+            })
+
+            continue
+        }
+
+        # --- ORIGINAL MOVE LOGIC ---
         $originalName = $baseName + $extension
         $originalPath = Join-Path -Path $clashFile.DirectoryName -ChildPath $originalName
-        
+
         if (Test-Path -Path $originalPath) {
             $originalFile = Get-Item -Path $originalPath
             
@@ -108,16 +151,23 @@ Write-Progress -Activity "Processing Duplicates" -Completed
 # --- OUTPUT & EXPORT SECTION ---
 
 Write-Host "`n--- ANALYSIS SUMMARY ---" -ForegroundColor Cyan
-[PSCustomObject]@{
-    "Total Clashed Pairs"       = $results.Count
-    "Exact Matches (Moved)"     = $countExactMatch
-    "Modified Duplicates (Kept)" = $countModified
-} | Format-Table -AutoSize
+
+if ($renameMode) {
+    [PSCustomObject]@{
+        "Total Renamed" = $countRenamed
+    } | Format-Table -AutoSize
+} else {
+    [PSCustomObject]@{
+        "Total Clashed Pairs"        = $results.Count
+        "Exact Matches (Moved)"      = $countExactMatch
+        "Modified Duplicates (Kept)" = $countModified
+    } | Format-Table -AutoSize
+}
 
 if ($results.Count -gt 0) {
     $results | Export-Csv -Path $csvPath -NoTypeInformation -Encoding utf8
     Write-Host "Success: Detailed CSV saved to: $csvPath" -ForegroundColor Green
     $results | Out-GridView -Title "Duplicate Name Clash Analysis"
 } else {
-    Write-Host "No clashing file pairs found." -ForegroundColor Yellow
+    Write-Host "No matching files found." -ForegroundColor Yellow
 }

@@ -42,7 +42,7 @@ $totalFiles = $allFiles.Count
 $processed = 0
 
 # Ask user if they want to rename instead of move 
-$renameChoice = Read-Host "Do you want to rename files matching the clash pattern instead of moving them? (Y/N)" 
+$renameChoice = Read-Host "Do you want to rename leftover files matching the clash pattern? (Y/N)" 
 $renameMode = $renameChoice.Trim().ToUpper() -eq "Y"
 
 Write-Host "Analyzing files..." -ForegroundColor Cyan
@@ -58,36 +58,6 @@ foreach ($clashFile in $allFiles) {
         $baseName = $Matches['BaseName'].Trim()
         $extension = $Matches['Extension']
         $cleanName = NormalizeString ($baseName + $extension)
-
-        # --- RENAME MODE ---
-        if ($renameMode) {
-            $oldPath = NormalizeString $clashFile.FullName
-            $newPath = NormalizeString (Join-Path -Path $clashFile.DirectoryName -ChildPath $cleanName)
-
-            # Normalize path
-            $cleanName = NormalizeString $cleanName 
-            $oldPath = NormalizeString $clashFile.FullName 
-            $newPath = Join-Path -Path $clashFile.DirectoryName -ChildPath $cleanName 
-            $newPath = NormalizeString $newPath
-
-            # Avoid overwriting existing files
-            if (Test-Path $newPath) {
-                $cleanName = NormalizeString "$baseName (renamed)$extension"
-                $newPath = Join-Path -Path $clashFile.DirectoryName -ChildPath $cleanName
-            }
-
-            Rename-Item -LiteralPath $oldPath -NewName $cleanName -Force
-            $countRenamed++
-
-            $results.Add([PSCustomObject]@{
-                "Status"          = "RENAMED"
-                "Old Name"        = $clashFile.Name
-                "New Name"        = $cleanName
-                "Original Folder" = $clashFile.DirectoryName
-            })
-
-            continue
-        }
 
         # --- ORIGINAL MOVE LOGIC ---
         $originalName = $baseName + $extension
@@ -147,6 +117,49 @@ foreach ($clashFile in $allFiles) {
 }
 
 Write-Progress -Activity "Processing Duplicates" -Completed
+
+# --------------------------------------------------------------------
+# RENAME LEFTOVER CLASH FILES
+# --------------------------------------------------------------------
+
+if ($renameMode) {
+
+    $leftoverFiles = Get-ChildItem -Path $sourceBase -File -Recurse |
+        Where-Object { $_.Name -match $pattern }
+
+    foreach ($file in $leftoverFiles) {
+
+        # Use explicit regex match object (never rely on $Matches)
+        $match = [regex]::Match($file.Name, $pattern)
+        if (-not $match.Success) { continue }
+
+        $baseName  = $match.Groups["BaseName"].Value.Trim()
+        $extension = $match.Groups["Extension"].Value
+        $cleanName = NormalizeString ($baseName + $extension)
+
+        # Normalize paths
+        $oldPath = NormalizeString $file.FullName
+        $newPath = NormalizeString (Join-Path -Path $file.DirectoryName -ChildPath $cleanName)
+
+        # Avoid overwriting
+        if (Test-Path $newPath) {
+            $cleanName = NormalizeString "$baseName (renamed)$extension"
+            $newPath = Join-Path -Path $file.DirectoryName -ChildPath $cleanName
+        }
+
+        # Perform rename
+        Rename-Item -LiteralPath $oldPath -NewName $cleanName -Force
+        $countRenamed++
+
+        # Log rename
+        $results.Add([PSCustomObject]@{
+            "Status"          = "RENAMED (Leftover)"
+            "Old Name"        = $file.Name
+            "New Name"        = $cleanName
+            "Original Folder" = $file.DirectoryName
+        })
+    }
+}
 
 # --- OUTPUT & EXPORT SECTION ---
 
